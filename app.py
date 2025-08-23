@@ -158,7 +158,6 @@ def _broken_mutual_friendships_per_class(df: pd.DataFrame) -> pd.Series:
 
 def _generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Trim only strings, preserve NaN so groupby ignores empty classes
     if "ΤΜΗΜΑ" in df:
         df["ΤΜΗΜΑ"] = df["ΤΜΗΜΑ"].apply(lambda v: v.strip() if isinstance(v, str) else v)
     if "ΦΥΛΟ" in df:
@@ -188,7 +187,6 @@ def _generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         "ΣΥΝΟΛΟ ΜΑΘΗΤΩΝ": total,
     }).fillna(0).astype(int)
 
-    # Safety: drop any accidental string 'nan' class name
     if hasattr(stats.index, "str"):
         stats = stats.loc[stats.index.str.lower() != "nan"]
 
@@ -286,32 +284,12 @@ if st.session_state.show_upload:
             st.error(f"❌ Σφάλμα κατά τη φόρτωση: {e}")
 
 # ---------------------------
-# Export
-# ---------------------------
-if export_clicked and st.session_state.data is not None:
-    if st.session_state.diagnostics and st.session_state.diagnostics.get("missing_required"):
-        st.error("Δεν γίνεται εξαγωγή: λείπουν υποχρεωτικές στήλες: " + ", ".join(st.session_state.diagnostics["missing_required"]))
-    else:
-        st.markdown("### 📊 Πίνακας Στατιστικών")
-        stats_df = _generate_stats(st.session_state.data)
-        st.session_state.stats_df = stats_df
-        st.dataframe(stats_df, use_container_width=True)
-        output = _export_to_excel(stats_df)
-        st.download_button(
-            label="💾 Λήψη Πίνακα Στατιστικών (Excel)",
-            data=output.getvalue(),
-            file_name=f"statistika_mathiton_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary"
-        )
-
-# ---------------------------
-# Floating bottom-right logo
+# Floating bottom-right logo (auto-detect path)
 # ---------------------------
 def floating_logo(image_path: str, caption: str = "", width_px: int = 140):
     p = pathlib.Path(image_path)
     if not p.exists():
-        return
+        return False
     b64 = base64.b64encode(p.read_bytes()).decode()
     html = f"""
     <style>
@@ -338,13 +316,37 @@ def floating_logo(image_path: str, caption: str = "", width_px: int = 140):
     </div>
     """
     st.markdown(html, unsafe_allow_html=True)
+    return True
 
-# Κάλεσέ το στο τέλος
-floating_logo(
-    "assets/logo.png",
-    "«Για μια παιδεία που βλέπει το φως σε όλα τα παιδιά»",
-    width_px=140
-)
+def floating_logo_auto(caption: str = "", width_px: int = 140):
+    candidates = ["assets/logo.png", "logo.png", "assets/logo.jpg", "logo.jpg"]
+    for path in candidates:
+        if floating_logo(path, caption, width_px):
+            return True
+    return False
+
+# Call auto version
+floating_logo_auto("«Για μια παιδεία που βλέπει το φως σε όλα τα παιδιά»", width_px=140)
+
+# ---------------------------
+# Export
+# ---------------------------
+if export_clicked and st.session_state.data is not None:
+    if st.session_state.diagnostics and st.session_state.diagnostics.get("missing_required"):
+        st.error("Δεν γίνεται εξαγωγή: λείπουν υποχρεωτικές στήλες: " + ", ".join(st.session_state.diagnostics["missing_required"]))
+    else:
+        st.markdown("### 📊 Πίνακας Στατιστικών")
+        stats_df = _generate_stats(st.session_state.data)
+        st.session_state.stats_df = stats_df
+        st.dataframe(stats_df, use_container_width=True)
+        output = _export_to_excel(stats_df)
+        st.download_button(
+            label="💾 Λήψη Πίνακα Στατιστικών (Excel)",
+            data=output.getvalue(),
+            file_name=f"statistika_mathiton_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary"
+        )
 
 # ---------------------------
 # Footer
