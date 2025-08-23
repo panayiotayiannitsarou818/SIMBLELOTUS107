@@ -24,7 +24,7 @@ with st.sidebar.expander("Κάτοχος/Δημιουργός & Άδεια", exp
 - **Πνευματικά δικαιώματα:** © 2025 Παναγιώτα Γιαννίτσαρου. **Απαγορεύεται** αντιγραφή, αναδημοσίευση ή τροποποίηση χωρίς **έγγραφη άδεια**.  
 - **Μη εμπορική χρήση** επιτρέπεται σε σχολεία για εσωτερική οργάνωση.  
 - Παρέχεται “**ως έχει**” χωρίς εγγυήσεις. Τα αποτελέσματα έχουν **βοηθητικό** χαρακτήρα και **δεν υποκαθιστούν** κανονιστικές αποφάσεις ή παιδαγωγική κρίση.  
-- **Επικοινωνία:** (προσθέστε e-mail/τηλέφωνο επικοινωνίας)
+- **Επικοινωνία:** [panayiotayiannitsarou@gmail.com](mailto:panayiotayiannitsarou@gmail.com)
 """)
 
 # Data Protection (GDPR) Guidance
@@ -157,8 +157,9 @@ def _broken_mutual_friendships_per_class(df: pd.DataFrame) -> pd.Series:
 
 def _generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # Trim only strings, preserve NaN so groupby ignores empty classes
     if "ΤΜΗΜΑ" in df:
-        df["ΤΜΗΜΑ"] = df["ΤΜΗΜΑ"].astype(str).str.strip()
+        df["ΤΜΗΜΑ"] = df["ΤΜΗΜΑ"].apply(lambda v: v.strip() if isinstance(v, str) else v)
     if "ΦΥΛΟ" in df:
         df["ΦΥΛΟ"] = df["ΦΥΛΟ"].fillna("").astype(str).str.strip().str.upper()
     for col in ["ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ"]:
@@ -183,8 +184,12 @@ def _generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         "ΙΔΙΑΙΤΕΡΟΤΗΤΑ": special,
         "ΓΝΩΣΗ ΕΛΛΗΝΙΚΩΝ": greek,
         "ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ": broken_by_class,
-        "ΣΥΝΟΛΟ": total,
+        "ΣΥΝΟΛΟ ΜΑΘΗΤΩΝ": total,
     }).fillna(0).astype(int)
+
+    # Safety: if for κάποιο λόγο προέκυψε string 'nan' από παλαιό αρχείο, κρύψ' το
+    if hasattr(stats.index, "str"):
+        stats = stats.loc[stats.index.str.lower() != "nan"]
 
     try:
         stats = stats.sort_index(key=lambda x: x.str.extract(r"(\d+)")[0].astype(float))
@@ -238,15 +243,23 @@ if st.session_state.show_upload:
         try:
             df_raw = pd.read_excel(up)
             df_norm, ren_map = auto_rename_columns(df_raw)
+            # Trim 'ΤΜΗΜΑ' only if it's string; keep NaN
+            if "ΤΜΗΜΑ" in df_norm.columns:
+                df_norm["ΤΜΗΜΑ"] = df_norm["ΤΜΗΜΑ"].apply(lambda v: v.strip() if isinstance(v, str) else v)
+
             st.session_state.data = df_norm.copy()
 
             present = list(df_norm.columns)
             missing = [c for c in REQUIRED_COLS if c not in present]
+            classes = sorted([str(x) for x in df_norm["ΤΜΗΜΑ"].dropna().unique()]) if "ΤΜΗΜΑ" in df_norm else []
+            missing_classes = int(df_norm["ΤΜΗΜΑ"].isna().sum()) if "ΤΜΗΜΑ" in df_norm else 0
+
             st.session_state.diagnostics = {
                 "recognized_columns": present,
                 "renamed": ren_map,
                 "missing_required": missing,
-                "classes_found": sorted([str(x) for x in df_norm["ΤΜΗΜΑ"].dropna().unique()]) if "ΤΜΗΜΑ" in df_norm else []
+                "classes_found": classes,
+                "missing_class_rows": missing_classes,
             }
 
             st.success(f"✅ Επιτυχής φόρτωση! Βρέθηκαν {len(df_norm)} μαθητές.")
@@ -257,9 +270,11 @@ if st.session_state.show_upload:
                 if missing:
                     st.error("❌ Λείπουν υποχρεωτικές στήλες: " + ", ".join(missing))
                 if "ΤΜΗΜΑ" in df_norm:
-                    st.write("Τμήματα που βρέθηκαν:", st.session_state.diagnostics["classes_found"])
+                    st.write("Τμήματα που βρέθηκαν:", classes)
+                    if missing_classes:
+                        st.warning(f"Υπάρχουν {missing_classes} εγγραφές χωρίς τιμή στο πεδίο ΤΜΗΜΑ — δεν θα συμπεριληφθούν στα στατιστικά.")
 
-            if not st.session_state.diagnostics["missing_required"]:
+            if not missing:
                 st.markdown("### 👀 Προεπισκόπηση Πίνακα Στατιστικών")
                 preview = _generate_stats(df_norm)
                 st.session_state.stats_df = preview
