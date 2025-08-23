@@ -3,7 +3,6 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
-import base64, pathlib
 
 st.set_page_config(page_title="📊 Στατιστικά Μαθητών Α' Δημοτικού", page_icon="📊", layout="wide")
 st.title("📊 Στατιστικά Μαθητών Α' Δημοτικού")
@@ -158,6 +157,7 @@ def _broken_mutual_friendships_per_class(df: pd.DataFrame) -> pd.Series:
 
 def _generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # Trim only strings, preserve NaN so groupby ignores empty classes
     if "ΤΜΗΜΑ" in df:
         df["ΤΜΗΜΑ"] = df["ΤΜΗΜΑ"].apply(lambda v: v.strip() if isinstance(v, str) else v)
     if "ΦΥΛΟ" in df:
@@ -187,6 +187,7 @@ def _generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         "ΣΥΝΟΛΟ ΜΑΘΗΤΩΝ": total,
     }).fillna(0).astype(int)
 
+    # Safety: if for κάποιο λόγο προέκυψε string 'nan' από παλαιό αρχείο, κρύψ' το
     if hasattr(stats.index, "str"):
         stats = stats.loc[stats.index.str.lower() != "nan"]
 
@@ -242,6 +243,7 @@ if st.session_state.show_upload:
         try:
             df_raw = pd.read_excel(up)
             df_norm, ren_map = auto_rename_columns(df_raw)
+            # Trim 'ΤΜΗΜΑ' only if it's string; keep NaN
             if "ΤΜΗΜΑ" in df_norm.columns:
                 df_norm["ΤΜΗΜΑ"] = df_norm["ΤΜΗΜΑ"].apply(lambda v: v.strip() if isinstance(v, str) else v)
 
@@ -282,51 +284,6 @@ if st.session_state.show_upload:
 
         except Exception as e:
             st.error(f"❌ Σφάλμα κατά τη φόρτωση: {e}")
-
-# ---------------------------
-# Floating bottom-right logo (auto-detect path)
-# ---------------------------
-def floating_logo(image_path: str, caption: str = "", width_px: int = 140):
-    p = pathlib.Path(image_path)
-    if not p.exists():
-        return False
-    b64 = base64.b64encode(p.read_bytes()).decode()
-    html = f"""
-    <style>
-      .fixed-logo {{
-        position: fixed;
-        right: 16px; bottom: 16px;
-        z-index: 9999;
-        text-align: center;
-        pointer-events: none;
-      }}
-      .fixed-logo img {{ width: {width_px}px; display:block; margin: 0 auto; }}
-      .fixed-logo .cap {{
-        font-size: 12px; line-height: 1.2; opacity: .85;
-        margin-top: 6px;
-      }}
-      @media (max-width: 600px) {{
-        .fixed-logo img {{ width: {int(width_px*0.8)}px; }}
-        .fixed-logo {{ right: 8px; bottom: 8px; }}
-      }}
-    </style>
-    <div class="fixed-logo">
-      <img alt="Λογότυπο" src="data:image/png;base64,{b64}">
-      {f'<div class="cap">{caption}</div>' if caption else ''}
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
-    return True
-
-def floating_logo_auto(caption: str = "", width_px: int = 140):
-    candidates = ["assets/logo.png", "logo.png", "assets/logo.jpg", "logo.jpg"]
-    for path in candidates:
-        if floating_logo(path, caption, width_px):
-            return True
-    return False
-
-# Call auto version
-floating_logo_auto("«Για μια παιδεία που βλέπει το φως σε όλα τα παιδιά»", width_px=140)
 
 # ---------------------------
 # Export
