@@ -96,17 +96,11 @@ CANON_TARGETS = {
 
 REQUIRED_COLS = ["ΟΝΟΜΑ","ΦΥΛΟ","ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ","ΦΙΛΟΙ","ΣΥΓΚΡΟΥΣΗ","ΤΜΗΜΑ"]
 
-
 def auto_rename_columns(df: pd.DataFrame):
-    """
-    Rename common Greek columns to a canonical set.
-    Now more permissive for the 'ΦΙΛΟΙ' column: detects any column whose canonical contains 'ΦΙΛ'.
-    Also accepts 'FRIEND'/'FRIENDS'.
-    """
     mapping = {}
     seen = set()
     for col in df.columns:
-        c = _canon(col)
+        c = canon(col)
         found_target = None
         for target, keys in CANON_TARGETS.items():
             if c in keys and target not in seen:
@@ -115,43 +109,7 @@ def auto_rename_columns(df: pd.DataFrame):
                 break
         if found_target:
             mapping[col] = found_target
-
-    renamed = df.rename(columns=mapping)
-
-    # Fallbacks for friends column if not mapped already
-    friends_cols = [c for c in renamed.columns if c in ("ΦΙΛΟΙ","ΦΙΛΙΑ","ΦΙΛΟΣ")]
-    if not friends_cols:
-        # search candidates by substring
-        candidates = []
-        for col in df.columns:
-            c = _canon(col)
-            if "ΦΙΛ" in c or "FRIEND" in c:
-                candidates.append(col)
-        # If we find multiple friend-like columns, concatenate them into one
-        if candidates:
-            # Create a combined ΦΙΛΟΙ column by joining non-empty parts with commas
-            combined = []
-            for _, row in df[candidates].astype(str).iterrows():
-                vals = [str(v).strip() for v in row.tolist() if str(v).strip() and str(v).strip().upper() not in ("-", "NA", "NAN")]
-                combined.append(", ".join(vals))
-            renamed["ΦΙΛΟΙ"] = combined
-
-    # Ensure ΤΜΗΜΑ exists: if not, try to pick the rightmost column that looks like class labels (A1, A2...)
-    if "ΤΜΗΜΑ" not in renamed.columns:
-        # candidate: column with short string labels and <= 6 unique non-empty values
-        best = None
-        for col in df.columns[::-1]:
-            s = df[col].dropna().astype(str).str.strip()
-            if not len(s):
-                continue
-            if s.str.len().median() <= 4 and s.nunique() <= 10:
-                best = col
-                break
-        if best:
-            renamed = renamed.rename(columns={best: "ΤΜΗΜΑ"})
-
-    return renamed, mapping
-
+    return df.rename(columns=mapping), mapping
 
 def _normalize_yes_no(series: pd.Series) -> pd.Series:
     if series.dtype == object:
