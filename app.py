@@ -148,6 +148,10 @@ def auto_rename_columns(df: pd.DataFrame):
 
     return renamed, mapping
 
+# ✅ Backward-compat alias to avoid NameError if any old code references the typo
+def auto_ename_columns(*args, **kwargs):
+    return auto_rename_columns(*args, **kwargs)
+
 def _normalize_yes_no(series: pd.Series) -> pd.Series:
     if series.dtype == object:
         s = series.fillna("").astype(str).str.strip().str.upper()
@@ -168,11 +172,11 @@ def _strip_diacritics(s: str) -> str:
 def _canon_name(s: str) -> str:
     s = (str(s) if s is not None else "").strip()
     s = s.strip("[]'\" ")
-    s = re.sub(r"\\s+", " ", s)
+    s = re.sub(r"\s+", " ", s)
     s = _strip_diacritics(s).upper()
     return s
 
-_SPLIT_RE = re.compile(r"\\s*(?:,|;|/|\\||\\band\\b|\\bκαι\\b|\\+|\\n)\\s*", flags=re.IGNORECASE)
+_SPLIT_RE = re.compile(r"\s*(?:,|;|/|\||\band\b|\bκαι\b|\+|\n)\s*", flags=re.IGNORECASE)
 
 def _parse_friends(cell):
     raw = str(cell) if cell is not None else ""
@@ -209,7 +213,7 @@ def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
 
     token_index = {}
     for full in df["__CAN_NAME__"]:
-        tokens = [t for t in re.split(r"\\s+", full) if t]
+        tokens = [t for t in re.split(r"\s+", full) if t]
         for t in tokens:
             token_index.setdefault(t, set()).add(full)
 
@@ -219,7 +223,7 @@ def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
             return None
         if s in name_to_original:
             return s
-        toks = [t for t in re.split(r"\\s+", s) if t]
+        toks = [t for t in re.split(r"\s+", s) if t]
         if not toks:
             return None
         if len(toks) >= 2:
@@ -280,7 +284,7 @@ def friend_resolution_diagnostics(df: pd.DataFrame):
 
     token_index = {}
     for full in df["__CAN_NAME__"]:
-        tokens = [t for t in re.split(r"\\s+", full) if t]
+        tokens = [t for t in re.split(r"\s+", full) if t]
         for t in tokens:
             token_index.setdefault(t, set()).add(full)
 
@@ -290,7 +294,7 @@ def friend_resolution_diagnostics(df: pd.DataFrame):
             return None, None
         if s in name_to_original:
             return s, "exact"
-        toks = [t for t in re.split(r"\\s+", s) if t]
+        toks = [t for t in re.split(r"\s+", s) if t]
         if not toks:
             return None, None
         if len(toks) >= 2:
@@ -395,7 +399,7 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     if hasattr(stats.index, "str"):
         stats = stats.loc[stats.index.str.lower() != "nan"]
     try:
-        stats = stats.sort_index(key=lambda x: x.str.extract(r"(\\d+)")[0].astype(float))
+        stats = stats.sort_index(key=lambda x: x.str.extract(r"(\d+)")[0].astype(float))
     except Exception:
         stats = stats.sort_index()
     return stats
@@ -419,7 +423,7 @@ def export_stats_to_excel(stats_df: pd.DataFrame) -> BytesIO:
 
 def sanitize_sheet_name(s: str) -> str:
     s = str(s or "")
-    s = re.sub(r'[:\\\\/?*\\\\[\\\\]]', ' ', s)
+    s = re.sub(r'[:\\/?*\\[\\]]', ' ', s)
     return s[:31] if s else "SHEET"
 
 def build_broken_report(xl: pd.ExcelFile, mode: str = "full") -> BytesIO:
@@ -521,9 +525,7 @@ with tab_broken:
     with st.expander("🔍 Προβολή αναλυτικών ζευγών & διάγνωση ανά sheet"):
         for sheet in xl.sheet_names:
             df_raw = xl.parse(sheet_name=sheet)
-            df_norm, _ = auto_ename_columns(df_raw)  # <-- typo in original? ensure correct name
-            # Fix: correct function name
-            df_norm, _ = auto_rename_columns(df_raw)
+            df_norm, _ = auto_rename_columns(df_raw)  # ✅ fixed: correct function name only
             broken_df, diag = friend_resolution_diagnostics(df_norm)
             st.markdown(f"**{sheet}**")
             if broken_df.empty:
