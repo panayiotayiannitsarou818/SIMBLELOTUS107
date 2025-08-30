@@ -1,18 +1,50 @@
+
 import streamlit as st
 import pandas as pd
 from io import BytesIO
 from datetime import datetime
 import re, ast, unicodedata
 
+# ---------------------------
+# 🔄 Restart helpers
+# ---------------------------
+def _restart_app():
+    """Clear caches & widget states (including file_uploader) and rerun."""
+    # rotate uploader key so the file_uploader fully resets
+    st.session_state["uploader_key"] = st.session_state.get("uploader_key", 0) + 1
+    # clear any previous uploader widget state keys
+    for k in list(st.session_state.keys()):
+        if str(k).startswith("uploader_"):
+            del st.session_state[k]
+    # clear caches
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+    try:
+        st.cache_resource.clear()
+    except Exception:
+        pass
+    st.rerun()
+
 st.set_page_config(page_title="📊 Στατιστικά & 🧩 Σπασμένες Φιλίες", page_icon="🧩", layout="wide")
 st.title("📊 Στατιστικά & 🧩 Σπασμένες Πλήρως Αμοιβαίες Δυάδες")
 
+# Ensure a stable uploader-key in session
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+
 # ---------------------------
-# Sidebar: Legal / Terms
+# Sidebar: Legal / Terms + Restart
 # ---------------------------
-st.sidebar.markdown("### ⚖️ Όροι χρήσης")
-terms_ok = st.sidebar.checkbox("Αποδέχομαι τους όρους χρήσης", value=True)
-st.sidebar.markdown("© 2025 • Πνευματικά δικαιώματα • **Παναγιώτα Γιαννίτσαρου**")
+with st.sidebar:
+    # 🔄 Restart button (always visible)
+    if st.button("🔄 Επανεκκίνηση εφαρμογής", help="Καθαρίζει μνήμη/φορτώσεις και ξεκινά από την αρχή"):
+        _restart_app()
+
+    st.markdown("### ⚖️ Όροι χρήσης")
+    terms_ok = st.checkbox("Αποδέχομαι τους όρους χρήσης", value=True)
+    st.markdown("© 2025 • Πνευματικά δικαιώματα • **Παναγιώτα Γιαννίτσαρου**")
 
 with st.sidebar.expander("Κάτοχος/Δημιουργός & Άδεια", expanded=False):
     st.markdown("""
@@ -136,11 +168,11 @@ def _strip_diacritics(s: str) -> str:
 def _canon_name(s: str) -> str:
     s = (str(s) if s is not None else "").strip()
     s = s.strip("[]'\" ")
-    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\\s+", " ", s)
     s = _strip_diacritics(s).upper()
     return s
 
-_SPLIT_RE = re.compile(r"\s*(?:,|;|/|\||\band\b|\bκαι\b|\+|\n)\s*", flags=re.IGNORECASE)
+_SPLIT_RE = re.compile(r"\\s*(?:,|;|/|\\||\\band\\b|\\bκαι\\b|\\+|\\n)\\s*", flags=re.IGNORECASE)
 
 def _parse_friends(cell):
     raw = str(cell) if cell is not None else ""
@@ -177,7 +209,7 @@ def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
 
     token_index = {}
     for full in df["__CAN_NAME__"]:
-        tokens = [t for t in re.split(r"\s+", full) if t]
+        tokens = [t for t in re.split(r"\\s+", full) if t]
         for t in tokens:
             token_index.setdefault(t, set()).add(full)
 
@@ -187,7 +219,7 @@ def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
             return None
         if s in name_to_original:
             return s
-        toks = [t for t in re.split(r"\s+", s) if t]
+        toks = [t for t in re.split(r"\\s+", s) if t]
         if not toks:
             return None
         if len(toks) >= 2:
@@ -248,7 +280,7 @@ def friend_resolution_diagnostics(df: pd.DataFrame):
 
     token_index = {}
     for full in df["__CAN_NAME__"]:
-        tokens = [t for t in re.split(r"\s+", full) if t]
+        tokens = [t for t in re.split(r"\\s+", full) if t]
         for t in tokens:
             token_index.setdefault(t, set()).add(full)
 
@@ -258,7 +290,7 @@ def friend_resolution_diagnostics(df: pd.DataFrame):
             return None, None
         if s in name_to_original:
             return s, "exact"
-        toks = [t for t in re.split(r"\s+", s) if t]
+        toks = [t for t in re.split(r"\\s+", s) if t]
         if not toks:
             return None, None
         if len(toks) >= 2:
@@ -363,7 +395,7 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     if hasattr(stats.index, "str"):
         stats = stats.loc[stats.index.str.lower() != "nan"]
     try:
-        stats = stats.sort_index(key=lambda x: x.str.extract(r"(\d+)")[0].astype(float))
+        stats = stats.sort_index(key=lambda x: x.str.extract(r"(\\d+)")[0].astype(float))
     except Exception:
         stats = stats.sort_index()
     return stats
@@ -387,7 +419,7 @@ def export_stats_to_excel(stats_df: pd.DataFrame) -> BytesIO:
 
 def sanitize_sheet_name(s: str) -> str:
     s = str(s or "")
-    s = re.sub(r'[:\\/?*\\[\\]]', ' ', s)
+    s = re.sub(r'[:\\\\/?*\\\\[\\\\]]', ' ', s)
     return s[:31] if s else "SHEET"
 
 def build_broken_report(xl: pd.ExcelFile, mode: str = "full") -> BytesIO:
@@ -416,10 +448,14 @@ def build_broken_report(xl: pd.ExcelFile, mode: str = "full") -> BytesIO:
     return bio
 
 # ---------------------------
-# Upload
+# Upload (with resettable key)
 # ---------------------------
 st.markdown("### 📥 Εισαγωγή Αρχείου Excel")
-uploaded = st.file_uploader("Επίλεξε **Excel** με ένα ή περισσότερα sheets (σενάρια)", type=["xlsx","xls"])
+uploaded = st.file_uploader(
+    "Επίλεξε **Excel** με ένα ή περισσότερα sheets (σενάρια)",
+    type=["xlsx","xls"],
+    key=f"uploader_{st.session_state['uploader_key']}"
+)
 
 if not uploaded:
     st.info("➕ Ανέβασε ένα Excel για να συνεχίσεις.")
@@ -485,6 +521,8 @@ with tab_broken:
     with st.expander("🔍 Προβολή αναλυτικών ζευγών & διάγνωση ανά sheet"):
         for sheet in xl.sheet_names:
             df_raw = xl.parse(sheet_name=sheet)
+            df_norm, _ = auto_ename_columns(df_raw)  # <-- typo in original? ensure correct name
+            # Fix: correct function name
             df_norm, _ = auto_rename_columns(df_raw)
             broken_df, diag = friend_resolution_diagnostics(df_norm)
             st.markdown(f"**{sheet}**")
