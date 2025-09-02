@@ -373,6 +373,43 @@ def broken_count_by_class(df: pd.DataFrame) -> pd.Series:
 
 # ---------------------------
 # Conflicts helpers (ΣΥΓΚΡΟΥΣΗ)
+
+# ---------------------------
+# Broken friendship names per student
+# ---------------------------
+def compute_broken_friend_names_per_student(df: pd.DataFrame):
+    """
+    Return (broken_counts_series, broken_names_series) per student.
+    Uses list_broken_mutual_pairs(df) and maps to each student all counterparts whose mutual friendship was broken (different classes).
+    """
+    if not {"ΟΝΟΜΑ", "ΤΜΗΜΑ"}.issubset(df.columns):
+        return pd.Series([0]*len(df), index=df.index), pd.Series([""]*len(df), index=df.index)
+
+    # Build canonical name mapping
+    df_local = df.copy()
+    df_local["__CAN_NAME__"] = df_local["ΟΝΟΜΑ"].map(_canon_name)
+    canon_to_display = dict(zip(df_local["__CAN_NAME__"], df_local["ΟΝΟΜΑ"].astype(str)))
+
+    # Build lookup from canonical to broken counterparts (display names)
+    broken_df = list_broken_mutual_pairs(df_local)
+    broken_map = {cn: [] for cn in df_local["__CAN_NAME__"]}
+
+    for _, row in broken_df.iterrows():
+        a = _canon_name(row["A"]) if "A" in row else ""
+        b = _canon_name(row["B"]) if "B" in row else ""
+        if a and b:
+            # Append display names
+            broken_map.setdefault(a, []).append(canon_to_display.get(b, row.get("B", "")))
+            broken_map.setdefault(b, []).append(canon_to_display.get(a, row.get("A", "")))
+
+    counts = []
+    names = []
+    for cn in df_local["__CAN_NAME__"]:
+        lst = broken_map.get(cn, []) or []
+        counts.append(len(lst))
+        names.append(", ".join(lst))
+    return pd.Series(counts, index=df.index), pd.Series(names, index=df.index)
+
 # ---------------------------
 def _parse_conflict_targets(cell):
     """Parse ΣΥΓΚΡΟΥΣΗ cell to list of canonical names (supports comma/semicolon/slash/pipe/newline)."""
@@ -617,6 +654,14 @@ with tab_stats:
         df_with_conflicts = df_norm.copy()
         df_with_conflicts["ΣΥΓΚΡΟΥΣΗ"] = conflict_counts.astype(int)
         df_with_conflicts["ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] = conflict_names
+
+        # 🧩 Προσθήκη σπασμένων αμοιβαίων ανά μαθητή (μετρητής + ονόματα)
+        try:
+            broken_counts_ps, broken_names_ps = compute_broken_friend_names_per_student(df_norm)
+            df_with_conflicts["ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ"] = broken_counts_ps.astype(int)
+            df_with_conflicts["ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ"] = broken_names_ps
+        except Exception:
+            pass
     except Exception:
         df_with_conflicts = df_norm
 
@@ -667,6 +712,56 @@ with tab_stats:
                     )
             except Exception as e:
                 st.warning(f"Δεν ήταν δυνατή η εμφάνιση ονομάτων σπασμένων δυάδων: {e}")
+
+
+
+        # 👥 Σπασμένες αμοιβαίες ανά μαθητή (με ονόματα)
+        with st.expander("👥 Σπασμένες αμοιβαίες ανά μαθητή (ονόματα) για το επιλεγμένο sheet", expanded=False):
+            try:
+                view_cols = [c for c in ["ΟΝΟΜΑ","ΤΜΗΜΑ","ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ","ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ"] if c in df_with_conflicts.columns]
+                if not view_cols:
+                    st.info("— Δεν υπάρχουν διαθέσιμα πεδία —")
+                else:
+                    st.dataframe(df_with_conflicts[view_cols], use_container_width=True)
+                    # Λήψη ως Excel
+                    from io import BytesIO
+                    bio2 = BytesIO()
+                    with pd.ExcelWriter(bio2, engine="xlsxwriter") as writer:
+                        df_with_conflicts[view_cols].to_excel(writer, index=False, sheet_name="Σπασμένες_Ανά_Μαθητή")
+                    bio2.seek(0)
+                    st.download_button(
+                        "⬇️ Κατέβασε σπασμένες ανά μαθητή (Excel)",
+                        data=bio2.getvalue(),
+                        file_name=f"broken_per_student_{sanitize_sheet_name(sheet)}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            except Exception as e:
+                st.warning(f"Δεν ήταν δυνατή η εμφάνιση σπασμένων ανά μαθητή: {e}")
+
+
+
+        # 👥 Συγκρούσεις ανά μαθητή (με ονόματα) — όπως το 'ΣΥΓΚΡΟΥΣΗ' & 'ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ'
+        with st.expander("👥 Συγκρούσεις ανά μαθητή (ονόματα) για το επιλεγμένο sheet", expanded=False):
+            try:
+                cols = [c for c in ["ΟΝΟΜΑ","ΤΜΗΜΑ","ΣΥΓΚΡΟΥΣΗ","ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] if c in df_with_conflicts.columns]
+                if not cols:
+                    st.info("— Δεν υπάρχουν διαθέσιμα πεδία —")
+                else:
+                    st.dataframe(df_with_conflicts[cols], use_container_width=True)
+                    # Λήψη ως Excel
+                    from io import BytesIO
+                    bio3 = BytesIO()
+                    with pd.ExcelWriter(bio3, engine="xlsxwriter") as writer:
+                        df_with_conflicts[cols].to_excel(writer, index=False, sheet_name="Συγκρούσεις_Ανά_Μαθητή")
+                    bio3.seek(0)
+                    st.download_button(
+                        "⬇️ Κατέβασε συγκρούσεις ανά μαθητή (Excel)",
+                        data=bio3.getvalue(),
+                        file_name=f"conflicts_per_student_{sanitize_sheet_name(sheet)}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            except Exception as e:
+                st.warning(f"Δεν ήταν δυνατή η εμφάνιση συγκρούσεων ανά μαθητή: {e}")
 
 
     if not missing:
