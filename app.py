@@ -719,7 +719,6 @@ with tab_stats:
                     st.dataframe(df_with_conflicts[cols], use_container_width=True)
                     # Λήψη ως Excel
                     from io import BytesIO
-import ast
                     bio3 = BytesIO()
                     with pd.ExcelWriter(bio3, engine="xlsxwriter") as writer:
                         df_with_conflicts[cols].to_excel(writer, index=False, sheet_name="Συγκρούσεις_Ανά_Μαθητή")
