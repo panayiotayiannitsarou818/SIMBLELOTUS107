@@ -28,7 +28,7 @@ def _restart_app():
     st.rerun()
 
 st.set_page_config(page_title="📊 Στατιστικά & 🧩 Σπασμένες Φιλίες", page_icon="🧩", layout="wide")
-st.title("📊 Στατιστικά & 🧩 Σπασμένες Πλήρως Αμοιβαίες Δυάδες")
+st.title("📊 Στατιστικά")
 
 # Ensure a stable uploader-key in session
 if "uploader_key" not in st.session_state:
@@ -684,7 +684,7 @@ with st.tabs(["📊 Στατιστικά (1 sheet)", "🧩 Σπασμένες α
     for sheet in xl.sheet_names:
         df_raw = xl.parse(sheet_name=sheet)
         df_norm, _ = auto_rename_columns(df_raw)
-        counts, pairs = compute_conflict_counts_and_pairs(df_norm)
+        counts, pairs, _ = compute_conflict_counts_and_pairs(df_norm)
         sum_rows.append({"Σενάριο (sheet)": sheet, "Ζεύγη σύγκρουσης στην ίδια τάξη": int(len(pairs))})
         pairs_by_sheet[sheet] = pairs
     summ_conf = pd.DataFrame(sum_rows).sort_values("Σενάριο (sheet)")
