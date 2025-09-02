@@ -146,6 +146,13 @@ def auto_rename_columns(df: pd.DataFrame):
         if best:
             renamed = renamed.rename(columns={best: "ΤΜΗΜΑ"})
 
+
+    # ✅ Ensure 'ΣΥΓΚΡΟΥΣΗ' column always exists (normalize plural -> singular or create empty)
+    if "ΣΥΓΚΡΟΥΣΗ" not in renamed.columns:
+        if "ΣΥΓΚΡΟΥΣΕΙΣ" in renamed.columns:
+            renamed = renamed.rename(columns={"ΣΥΓΚΡΟΥΣΕΙΣ": "ΣΥΓΚΡΟΥΣΗ"})
+        else:
+            renamed["ΣΥΓΚΡΟΥΣΗ"] = ""
     return renamed, mapping
 
 # ✅ Backward-compat alias to avoid NameError if any old code references the typo
@@ -363,6 +370,107 @@ def broken_count_by_class(df: pd.DataFrame) -> pd.Series:
         counts[b_c] = counts.get(b_c, 0) + 1
     return pd.Series(counts).astype(int)
 
+
+# ---------------------------
+# Conflicts helpers (ΣΥΓΚΡΟΥΣΗ)
+# ---------------------------
+def _parse_conflict_targets(cell):
+    """Parse ΣΥΓΚΡΟΥΣΗ cell to list of canonical names (supports comma/semicolon/slash/pipe/newline)."""
+    raw = str(cell) if cell is not None else ""
+    raw = raw.strip()
+    if not raw:
+        return []
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            val = ast.literal_eval(raw)
+            if isinstance(val, (list, tuple)):
+                return [_canon_name(x) for x in val if str(x).strip()]
+        except Exception:
+            pass
+        raw2 = raw.strip("[]")
+        parts = re.split(r"[;,]", raw2)
+        return [_canon_name(p) for p in parts if _canon_name(p)]
+    parts = [p for p in _SPLIT_RE.split(raw) if p]
+    return [_canon_name(p) for p in parts if _canon_name(p)]
+
+def _build_name_resolution(df: pd.DataFrame):
+    df = df.copy()
+    df["__CAN_NAME__"] = df["ΟΝΟΜΑ"].map(_canon_name)
+    name_to_original = dict(zip(df["__CAN_NAME__"], df["ΟΝΟΜΑ"].astype(str)))
+    class_by_name = dict(zip(df["__CAN_NAME__"], df["ΤΜΗΜΑ"].astype(str).str.strip()))
+    token_index = {}
+    for full in df["__CAN_NAME__"]:
+        tokens = [t for t in re.split(r"\s+", full) if t]
+        for t in tokens:
+            token_index.setdefault(t, set()).add(full)
+    def resolve_name(s: str):
+        s = _canon_name(s)
+        if not s:
+            return None
+        if s in name_to_original:
+            return s
+        toks = [t for t in re.split(r"\s+", s) if t]
+        if not toks:
+            return None
+        if len(toks) >= 2:
+            sets = [token_index.get(t, set()) for t in toks]
+            inter = set.intersection(*sets) if sets else set()
+            if len(inter) == 1:
+                return next(iter(inter))
+            union = set().union(*sets)
+            if len(union) == 1:
+                return next(iter(union))
+            return None
+        else:
+            group = token_index.get(toks[0], set())
+            return next(iter(group)) if len(group) == 1 else None
+    return name_to_original, class_by_name, resolve_name
+
+def compute_conflict_counts_and_pairs(df: pd.DataFrame):
+    """
+    Return (counts_series, pairs_df).
+    counts_series: per-student integer count of conflicts seated in the SAME class as the student (unilateral list-based).
+    pairs_df: deduplicated pairs (A,B) where either A listed B (or B listed A) and both are in the same class.
+    """
+    required = {"ΟΝΟΜΑ", "ΤΜΗΜΑ", "ΣΥΓΚΡΟΥΣΗ"}
+    if not required.issubset(set(df.columns)):
+        return pd.Series([0]*len(df), index=df.index), pd.DataFrame(columns=["A","A_ΤΜΗΜΑ","B","B_ΤΜΗΜΑ"])
+
+    name_to_original, class_by_name, resolve_name = _build_name_resolution(df)
+
+    # Build canonical name per row for alignment
+    canon_names = df["ΟΝΟΜΑ"].map(_canon_name)
+    counts = [0]*len(df)
+    pairs = set()
+
+    # map index by canonical name for alignment
+    index_by_canon = {cn: i for i, cn in enumerate(canon_names)}
+
+    for i, row in df.iterrows():
+        me = _canon_name(row["ΟΝΟΜΑ"])
+        my_class = class_by_name.get(me, "")
+        targets = _parse_conflict_targets(row["ΣΥΓΚΡΟΥΣΗ"])
+        my_count = 0
+        for t in targets:
+            r = resolve_name(t)
+            if r and r != me:
+                if class_by_name.get(r, None) == my_class and my_class:
+                    my_count += 1
+                    pair = tuple(sorted([me, r]))
+                    pairs.add(pair)
+        counts[index_by_canon.get(me, i)] = my_count
+
+    rows = []
+    for a, b in sorted(pairs):
+        ta = class_by_name.get(a, "")
+        tb = class_by_name.get(b, "")
+        if ta == tb and ta:
+            rows.append({
+                "A": name_to_original.get(a, a), "A_ΤΜΗΜΑ": ta,
+                "B": name_to_original.get(b, b), "B_ΤΜΗΜΑ": tb,
+            })
+    pairs_df = pd.DataFrame(rows)
+    return pd.Series(counts, index=df.index), pairs_df
 # ---------------------------
 # Stats generator
 # ---------------------------
@@ -482,6 +590,15 @@ with tab_stats:
     sheet = st.selectbox("Διάλεξε sheet", options=xl.sheet_names, index=0)
     df_raw = xl.parse(sheet_name=sheet)
     df_norm, ren_map = auto_rename_columns(df_raw)
+
+    # ✅ Υπολογισμός μετρητή ΣΥΓΚΡΟΥΣΗΣ και ζευγών στην ίδια τάξη
+    conflict_counts, conflict_pairs = compute_conflict_counts_and_pairs(df_norm)
+    try:
+        df_with_conflicts = df_norm.copy()
+        df_with_conflicts["ΣΥΓΚΡΟΥΣΗ"] = conflict_counts.astype(int)
+    except Exception:
+        df_with_conflicts = df_norm
+
     missing = [c for c in REQUIRED_COLS if c not in df_norm.columns]
     with st.expander("🔎 Διάγνωση/Μετονομασίες", expanded=False):
         st.write("Αναγνωρισμένες στήλες:", list(df_norm.columns))
@@ -489,6 +606,16 @@ with tab_stats:
             st.write("Αυτόματες μετονομασίες:", ren_map)
         if missing:
             st.error("❌ Λείπουν υποχρεωτικές στήλες: " + ", ".join(missing))
+
+    if not missing:
+        with st.expander("👁️ Προβολή πίνακα μαθητών με μετρητή ΣΥΓΚΡΟΥΣΗΣ και τμήμα", expanded=False):
+            st.dataframe(df_with_conflicts, use_container_width=True)
+        with st.expander("🚫 Ζεύγη σύγκρουσης που βρέθηκαν στην ίδια τάξη (για το επιλεγμένο sheet)", expanded=False):
+            if conflict_pairs.empty:
+                st.info("— Δεν βρέθηκαν ζεύγη σύγκρουσης στην ίδια τάξη —")
+            else:
+                st.dataframe(conflict_pairs, use_container_width=True)
+
     if not missing:
         stats_df = generate_stats(df_norm)
         st.dataframe(stats_df, use_container_width=True)
@@ -540,3 +667,28 @@ with tab_broken:
                         st.error("Αμφίβολα ονόματα (ίδιο μικρό/επώνυμο σε πολλούς):")
                         for tok, cand in diag["ambiguous"].items():
                             st.write(f"- **{tok}** → πιθανοί: {', '.join(cand)}")
+
+
+with st.tabs(["📊 Στατιστικά (1 sheet)", "🧩 Σπασμένες αμοιβαίες (όλα τα sheets) — Έξοδος: Πλήρες αντίγραφο + Σύνοψη", "🚫 Συγκρούσεις (όλα τα sheets)"])[2]:
+    st.subheader("🚫 Αναφορά Συγκρούσεων στην ίδια τάξη (όλα τα sheets)")
+    # Summary per sheet
+    sum_rows = []
+    pairs_by_sheet = {}
+    for sheet in xl.sheet_names:
+        df_raw = xl.parse(sheet_name=sheet)
+        df_norm, _ = auto_rename_columns(df_raw)
+        counts, pairs = compute_conflict_counts_and_pairs(df_norm)
+        sum_rows.append({"Σενάριο (sheet)": sheet, "Ζεύγη σύγκρουσης στην ίδια τάξη": int(len(pairs))})
+        pairs_by_sheet[sheet] = pairs
+    summ_conf = pd.DataFrame(sum_rows).sort_values("Σενάριο (sheet)")
+    st.dataframe(summ_conf, use_container_width=True)
+    # Detailed per sheet
+    with st.expander("🔍 Αναλυτικά ζεύγη ανά sheet"):
+        for sheet in xl.sheet_names:
+            st.markdown(f"**{sheet}**")
+            pairs = pairs_by_sheet[sheet]
+            if pairs.empty:
+                st.info("— Δεν βρέθηκαν ζεύγη σύγκρουσης στην ίδια τάξη —")
+            else:
+                st.dataframe(pairs, use_container_width=True)
+
