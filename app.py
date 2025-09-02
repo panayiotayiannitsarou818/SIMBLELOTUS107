@@ -34,10 +34,8 @@ if "uploader_key" not in st.session_state:
 # Sidebar: Legal / Terms + Restart
 # ---------------------------
 with st.sidebar:
-    # 🔄 Restart button (always visible)
     if st.button("🔄 Επανεκκίνηση εφαρμογής", help="Καθαρίζει μνήμη/φορτώσεις και ξεκινά από την αρχή"):
         _restart_app()
-
     st.markdown("### ⚖️ Όροι χρήσης")
     terms_ok = st.checkbox("Αποδέχομαι τους όρους χρήσης", value=True)
     st.markdown("© 2025 • Πνευματικά δικαιώματα • **Παναγιώτα Γιαννίτσαρου**")
@@ -94,27 +92,18 @@ CANON_TARGETS = {
 REQUIRED_COLS = ["ΟΝΟΜΑ","ΦΥΛΟ","ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ","ΦΙΛΟΙ","ΣΥΓΚΡΟΥΣΗ","ΤΜΗΜΑ"]
 
 def auto_rename_columns(df: pd.DataFrame):
-    """
-    Rename common Greek columns to a canonical set.
-    More permissive for 'ΦΙΛΟΙ': detects any column whose canonical contains 'ΦΙΛ' or 'FRIEND'.
-    If multiple friend-like columns exist, they are concatenated into one.
-    """
-    mapping = {}
-    seen = set()
+    """Map κοινές ελληνικές στήλες σε κανονική μορφή. Αν δεν βρεθούν, δημιουργούνται/συνενώνονται όπου χρειάζεται."""
+    mapping, seen = {}, set()
     for col in df.columns:
         c = _canon(col)
-        found_target = None
         for target, keys in CANON_TARGETS.items():
             if c in keys and target not in seen:
-                found_target = target
+                mapping[col] = target
                 seen.add(target)
                 break
-        if found_target:
-            mapping[col] = found_target
-
     renamed = df.rename(columns=mapping)
 
-    # Fallbacks for friends column if not mapped already
+    # ΦΙΛΟΙ fallback
     friends_cols = [c for c in renamed.columns if c in ("ΦΙΛΟΙ","ΦΙΛΙΑ","ΦΙΛΟΣ")]
     if not friends_cols:
         candidates = []
@@ -125,11 +114,11 @@ def auto_rename_columns(df: pd.DataFrame):
         if candidates:
             combined = []
             for _, row in df[candidates].astype(str).iterrows():
-                vals = [str(v).strip() for v in row.tolist() if str(v).strip() and str(v).strip().upper() not in ("-", "NA", "NAN")]
+                vals = [str(v).strip() for v in row.tolist() if str(v).strip() and str(v).strip().upper() not in ("-","NA","NAN")]
                 combined.append(", ".join(vals))
             renamed["ΦΙΛΟΙ"] = combined
 
-    # Ensure ΤΜΗΜΑ exists
+    # ΤΜΗΜΑ fallback
     if "ΤΜΗΜΑ" not in renamed.columns:
         best = None
         for col in df.columns[::-1]:
@@ -140,9 +129,9 @@ def auto_rename_columns(df: pd.DataFrame):
                 best = col
                 break
         if best:
-            renamed = renamed.rename(columns={best: "ΤΜΗΜΑ"})
+            renamed = renamed.rename(columns={best:"ΤΜΗΜΑ"})
 
-    # Ensure 'ΣΥΓΚΡΟΥΣΗ' exists
+    # ΣΥΓΚΡΟΥΣΗ fallback
     if "ΣΥΓΚΡΟΥΣΗ" not in renamed.columns:
         if "ΣΥΓΚΡΟΥΣΕΙΣ" in renamed.columns:
             renamed = renamed.rename(columns={"ΣΥΓΚΡΟΥΣΕΙΣ": "ΣΥΓΚΡΟΥΣΗ"})
@@ -150,24 +139,10 @@ def auto_rename_columns(df: pd.DataFrame):
             renamed["ΣΥΓΚΡΟΥΣΗ"] = ""
     return renamed, mapping
 
-# Back-compat alias
-def auto_ename_columns(*args, **kwargs):
-    return auto_rename_columns(*args, **kwargs)
-
-
-def _normalize_yes_no(series: pd.Series) -> pd.Series:
-    if series.dtype == object:
-        s = series.fillna("").astype(str).str.strip().str.upper()
-        s = s.replace({
-            "ΝΑΙ":"Ν","NAI":"Ν","YES":"Ν","Y":"Ν",
-            "ΟΧΙ":"Ο","OXI":"Ο","NO":"Ο","N":"Ο","": "Ο"
-        })
-        return s.where(s.isin(["Ν","Ο"]), other="Ο")
-    return series
-
 # ---------------------------
-# Broken friendships helpers
+# Name canonicalization helpers
 # ---------------------------
+
 def _strip_diacritics(s: str) -> str:
     nfkd = unicodedata.normalize("NFD", s)
     return "".join(ch for ch in nfkd if not unicodedata.combining(ch))
@@ -180,6 +155,10 @@ def _canon_name(s: str) -> str:
     return s
 
 _SPLIT_RE = re.compile(r"\s*(?:,|;|/|\||\band\b|\bκαι\b|\+|\n)\s*", flags=re.IGNORECASE)
+
+# ---------------------------
+# Friends parsing & broken pairs
+# ---------------------------
 
 def _parse_friends(cell):
     raw = str(cell) if cell is not None else ""
@@ -201,7 +180,7 @@ def _parse_friends(cell):
 
 
 def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
-    """Return DataFrame with each broken mutual pair (A/B with classes)."""
+    """Επιστρέφει DataFrame με κάθε **σπασμένη πλήρως αμοιβαία δυάδα** (A/B + τμήματα)."""
     fcol = None
     for candidate in ["ΦΙΛΟΙ","ΦΙΛΙΑ","ΦΙΛΟΣ"]:
         if candidate in df.columns:
@@ -271,106 +250,38 @@ def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
             })
     return pd.DataFrame(rows)
 
+# ---------------------------
+# Broken friendships per student (counts + names)
+# ---------------------------
 
-def friend_resolution_diagnostics(df: pd.DataFrame):
-    """Return (broken_df, diagnostics) where diagnostics includes unmatched and ambiguous tokens."""
-    fcol = None
-    for candidate in ["ΦΙΛΟΙ","ΦΙΛΙΑ","ΦΙΛΟΣ"]:
-        if candidate in df.columns:
-            fcol = candidate
-            break
-    if fcol is None or "ΟΝΟΜΑ" not in df.columns or "ΤΜΗΜΑ" not in df.columns:
-        return pd.DataFrame(columns=["A","A_ΤΜΗΜΑ","B","B_ΤΜΗΜΑ"]), {"unmatched": [], "ambiguous": {}}
+def compute_broken_friend_names_per_student(df: pd.DataFrame):
+    """Return (counts_series, names_series) per student for σπασμένες πλήρως αμοιβαίες δυάδες."""
+    if not {"ΟΝΟΜΑ", "ΤΜΗΜΑ"}.issubset(df.columns):
+        return pd.Series([0]*len(df), index=df.index), pd.Series([""]*len(df), index=df.index)
 
-    df = df.copy()
-    df["__CAN_NAME__"] = df["ΟΝΟΜΑ"].map(_canon_name)
-    name_to_original = dict(zip(df["__CAN_NAME__"], df["ΟΝΟΜΑ"].astype(str)))
-    class_by_name = dict(zip(df["__CAN_NAME__"], df["ΤΜΗΜΑ"].astype(str).str.strip()))
+    df_local = df.copy()
+    df_local["__CAN_NAME__"] = df_local["ΟΝΟΜΑ"].map(_canon_name)
+    canon_to_display = dict(zip(df_local["__CAN_NAME__"], df_local["ΟΝΟΜΑ"].astype(str)))
 
-    token_index = {}
-    for full in df["__CAN_NAME__"]:
-        tokens = [t for t in re.split(r"\s+", full) if t]
-        for t in tokens:
-            token_index.setdefault(t, set()).add(full)
+    broken_df = list_broken_mutual_pairs(df_local)
+    broken_map = {cn: [] for cn in df_local["__CAN_NAME__"]}
 
-    def resolve_friend_diagnose(s: str):
-        s = _canon_name(s)
-        if not s:
-            return None, None
-        if s in name_to_original:
-            return s, "exact"
-        toks = [t for t in re.split(r"\s+", s) if t]
-        if not toks:
-            return None, None
-        if len(toks) >= 2:
-            sets = [token_index.get(t, set()) for t in toks]
-            inter = set.intersection(*sets) if sets else set()
-            if len(inter) == 1:
-                return next(iter(inter)), "intersection"
-            union = set().union(*sets)
-            if len(union) == 1:
-                return next(iter(union)), "union-unique"
-            return None, ("ambiguous", list(sorted(union)))
-        else:
-            group = token_index.get(toks[0], set())
-            if len(group) == 1:
-                return next(iter(group)), "single-unique"
-            elif len(group) > 1:
-                return None, ("ambiguous", list(sorted(group)))
-            else:
-                return None, None
+    for _, row in broken_df.iterrows():
+        a = _canon_name(row.get("A", "")) if "A" in row else ""
+        b = _canon_name(row.get("B", "")) if "B" in row else ""
+        if a and b:
+            broken_map.setdefault(a, []).append(canon_to_display.get(b, row.get("B", "")))
+            broken_map.setdefault(b, []).append(canon_to_display.get(a, row.get("A", "")))
 
-    friends_by_name = {}
-    unmatched = set()
-    ambiguous = {}
-    for _, row in df.iterrows():
-        me = row["__CAN_NAME__"]
-        flist_raw = _parse_friends(row[fcol])
-        resolved = set()
-        for fr in flist_raw:
-            r, how = resolve_friend_diagnose(fr)
-            if r is None:
-                if isinstance(how, tuple) and how[0] == "ambiguous":
-                    ambiguous[_canon_name(fr)] = [name_to_original.get(x, x) for x in how[1]]
-                else:
-                    unmatched.add(_canon_name(fr))
-            elif r != me:
-                resolved.add(r)
-        friends_by_name[me] = resolved
-
-    mutual_pairs = set()
-    for a, flist in friends_by_name.items():
-        for b in flist:
-            if b in friends_by_name and a in friends_by_name[b]:
-                mutual_pairs.add(tuple(sorted([a,b])))
-
-    rows = []
-    for a, b in sorted(mutual_pairs):
-        ta = class_by_name.get(a, "")
-        tb = class_by_name.get(b, "")
-        if ta and tb and ta != tb:
-            rows.append({
-                "A": name_to_original.get(a, a), "A_ΤΜΗΜΑ": ta,
-                "B": name_to_original.get(b, b), "B_ΤΜΗΜΑ": tb,
-            })
-    broken_df = pd.DataFrame(rows)
-    return broken_df, {"unmatched": sorted(unmatched), "ambiguous": ambiguous}
-
-
-def broken_count_by_class(df: pd.DataFrame) -> pd.Series:
-    pairs = list_broken_mutual_pairs(df)
-    if pairs.empty:
-        return pd.Series({tmima: 0 for tmima in df["ΤΜΗΜΑ"].dropna().astype(str).str.strip().unique()})
-    counts = {}
-    for _, row in pairs.iterrows():
-        a_c = str(row["A_ΤΜΗΜΑ"]).strip()
-        b_c = str(row["B_ΤΜΗΜΑ"]).strip()
-        counts[a_c] = counts.get(a_c, 0) + 1
-        counts[b_c] = counts.get(b_c, 0) + 1
-    return pd.Series(counts).astype(int)
+    counts, names = [], []
+    for cn in df_local["__CAN_NAME__"]:
+        lst = broken_map.get(cn, []) or []
+        counts.append(len(lst))
+        names.append(", ".join(lst))
+    return pd.Series(counts, index=df.index), pd.Series(names, index=df.index)
 
 # ---------------------------
-# Conflicts (ΣΥΓΚΡΟΥΣΗ) — per-student counter & names only (NO pairs)
+# Conflicts per student (NO pairs)
 # ---------------------------
 
 def _parse_conflict_targets(cell):
@@ -429,8 +340,8 @@ def _build_name_resolution(df: pd.DataFrame):
 def compute_conflict_counts_and_names(df: pd.DataFrame):
     """
     Return (counts_series, names_series) per student.
-    - counts_series: integer count of listed conflicts seated in the SAME class (unilateral OK).
-    - names_series: comma-separated string of conflict names that are in the same class.
+    - counts_series: πόσοι από τους δηλωμένους βρίσκονται στην **ίδια τάξη** (μονόπλευρη δήλωση αρκεί).
+    - names_series: ονόματα αυτών των μαθητών (comma-separated).
     """
     required = {"ΟΝΟΜΑ", "ΤΜΗΜΑ", "ΣΥΓΚΡΟΥΣΗ"}
     if not required.issubset(set(df.columns)):
@@ -471,7 +382,13 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         df["ΦΥΛΟ"] = df["ΦΥΛΟ"].fillna("").astype(str).str.strip().str.upper()
     for col in ["ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ"]:
         if col in df:
-            df[col] = _normalize_yes_no(df[col])
+            s = df[col]
+            if s.dtype == object:
+                s = s.fillna("").astype(str).str.strip().str.upper().replace({
+                    "ΝΑΙ":"Ν","NAI":"Ν","YES":"Ν","Y":"Ν",
+                    "ΟΧΙ":"Ο","OXI":"Ο","NO":"Ο","N":"Ο","": "Ο"
+                })
+                df[col] = s.where(s.isin(["Ν","Ο"]), other="Ο")
 
     boys = df[df.get("ΦΥΛΟ", "").eq("Α")].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
     girls = df[df.get("ΦΥΛΟ", "").eq("Κ")].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
@@ -481,12 +398,22 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     greek = df[df.get("ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ", "").eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ" in df else pd.Series(dtype=int)
     total = df.groupby("ΤΜΗΜΑ").size() if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
 
+    # Broken friendships per class
     try:
-        broken = broken_count_by_class(df) if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
+        pairs = list_broken_mutual_pairs(df)
+        if pairs.empty:
+            broken = pd.Series({tmima: 0 for tmima in df["ΤΜΗΜΑ"].dropna().astype(str).str.strip().unique()})
+        else:
+            counts = {}
+            for _, row in pairs.iterrows():
+                a_c = str(row["A_ΤΜΗΜΑ"]).strip(); b_c = str(row["B_ΤΜΗΜΑ"]).strip()
+                counts[a_c] = counts.get(a_c, 0) + 1
+                counts[b_c] = counts.get(b_c, 0) + 1
+            broken = pd.Series(counts).astype(int)
     except Exception:
         broken = pd.Series(dtype=int)
 
-    # Conflicts per class = sum of per-student conflict counts (no pairs)
+    # Conflicts per class = sum of per-student counts (no pairs)
     try:
         conf_counts, _conf_names = compute_conflict_counts_and_names(df)
         if "ΤΜΗΜΑ" in df:
@@ -541,32 +468,6 @@ def sanitize_sheet_name(s: str) -> str:
     s = re.sub(r'[:\\/?*\\[\\]]', ' ', s)
     return s[:31] if s else "SHEET"
 
-
-def build_broken_report(xl: pd.ExcelFile, mode: str = "full") -> BytesIO:
-    bio = BytesIO()
-    summary_rows = []
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        # copy originals
-        for sheet in xl.sheet_names:
-            df_raw = xl.parse(sheet_name=sheet)
-            df_raw.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
-        # broken per sheet
-        for sheet in xl.sheet_names:
-            df_raw = xl.parse(sheet_name=sheet)
-            df_norm, _ = auto_rename_columns(df_raw)
-            broken_df = list_broken_mutual_pairs(df_norm)
-            summary_rows.append({"Σενάριο (sheet)": sheet, "Σπασμένες Δυάδες": int(len(broken_df))})
-            out_name = sanitize_sheet_name(f"{sheet}_BROKEN")
-            if broken_df.empty:
-                pd.DataFrame({"info": ["— καμία σπασμένη —"]}).to_excel(writer, index=False, sheet_name=out_name)
-            else:
-                broken_df.to_excel(writer, index=False, sheet_name=out_name)
-        # summary
-        summary_df = pd.DataFrame(summary_rows).sort_values("Σενάριο (sheet)")
-        summary_df.to_excel(writer, index=False, sheet_name="Σύνοψη")
-    bio.seek(0)
-    return bio
-
 # ---------------------------
 # Upload (with resettable key)
 # ---------------------------
@@ -590,7 +491,7 @@ except Exception as e:
     st.stop()
 
 # ---------------------------
-# Tabs (NO conflicts pairs tab)
+# Tabs (NO conflict pairs tab)
 # ---------------------------
 
 tab_stats, tab_broken, tab_mass = st.tabs([
@@ -605,21 +506,21 @@ with tab_stats:
     df_raw = xl.parse(sheet_name=sheet)
     df_norm, ren_map = auto_rename_columns(df_raw)
 
-    # ✅ Μετρητής ΣΥΓΚΡΟΥΣΗ & ονόματα (χωρίς ζεύγη)
+    # ✅ Μετρητής ΣΥΓΚΡΟΥΣΗ & ονόματα (χωρίς ζεύγη A–B)
     try:
         conflict_counts, conflict_names = compute_conflict_counts_and_names(df_norm)
-        df_with_conflicts = df_norm.copy()
-        df_with_conflicts["ΣΥΓΚΡΟΥΣΗ"] = conflict_counts.astype(int)
-        df_with_conflicts["ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] = conflict_names
+        df_with = df_norm.copy()
+        df_with["ΣΥΓΚΡΟΥΣΗ"] = conflict_counts.astype(int)
+        df_with["ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] = conflict_names
         # 🧩 Σπασμένες αμοιβαίες ανά μαθητή (μετρητής + ονόματα)
         try:
             broken_counts_ps, broken_names_ps = compute_broken_friend_names_per_student(df_norm)
-            df_with_conflicts["ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ"] = broken_counts_ps.astype(int)
-            df_with_conflicts["ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ"] = broken_names_ps
+            df_with["ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ"] = broken_counts_ps.astype(int)
+            df_with["ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ"] = broken_names_ps
         except Exception:
             pass
     except Exception:
-        df_with_conflicts = df_norm
+        df_with = df_norm
 
     missing = [c for c in REQUIRED_COLS if c not in df_norm.columns]
     with st.expander("🔎 Διάγνωση/Μετονομασίες", expanded=False):
@@ -630,12 +531,12 @@ with tab_stats:
             st.error("❌ Λείπουν υποχρεωτικές στήλες: " + ", ".join(missing))
 
     if not missing:
-        with st.expander("👁️ Πίνακας μαθητών με μετρητή ΣΥΓΚΡΟΥΣΗΣ & ονόματα", expanded=False):
-            st.dataframe(df_with_conflicts, use_container_width=True)
-            # Λήψη ως Excel (ανά μαθητή)
+        with st.expander("👁️ Πίνακας μαθητών (με ΣΥΓΚΡΟΥΣΗ & ονόματα)", expanded=False):
+            st.dataframe(df_with, use_container_width=True)
+            # Λήψη ως Excel
             bio_conf = BytesIO()
             with pd.ExcelWriter(bio_conf, engine="xlsxwriter") as writer:
-                df_with_conflicts.to_excel(writer, index=False, sheet_name="Μαθητές_Σύγκρουση")
+                df_with.to_excel(writer, index=False, sheet_name="Μαθητές_Σύγκρουση")
             bio_conf.seek(0)
             st.download_button(
                 "⬇️ Κατέβασε πίνακα μαθητών (με ΣΥΓΚΡΟΥΣΗ & ονόματα)",
@@ -685,9 +586,31 @@ with tab_broken:
     summary = pd.DataFrame(summary_rows).sort_values("Σενάριο (sheet)")
     st.dataframe(summary, use_container_width=True)
 
+    # Build full report: copy originals + *_BROKEN + Σύνοψη
+    def build_broken_report(xl_file: pd.ExcelFile) -> BytesIO:
+        bio = BytesIO()
+        rows = []
+        with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+            for sheet in xl_file.sheet_names:
+                df_raw = xl_file.parse(sheet_name=sheet)
+                df_raw.to_excel(writer, index=False, sheet_name=sanitize_sheet_name(sheet))
+            for sheet in xl_file.sheet_names:
+                df_raw = xl_file.parse(sheet_name=sheet)
+                df_norm, _ = auto_rename_columns(df_raw)
+                broken_df = list_broken_mutual_pairs(df_norm)
+                rows.append({"Σενάριο (sheet)": sheet, "Σπασμένες Δυάδες": int(len(broken_df))})
+                out_name = sanitize_sheet_name(f"{sheet}_BROKEN")
+                if broken_df.empty:
+                    pd.DataFrame({"info": ["— καμία σπασμένη —"]}).to_excel(writer, index=False, sheet_name=out_name)
+                else:
+                    broken_df.to_excel(writer, index=False, sheet_name=out_name)
+            pd.DataFrame(rows).sort_values("Σενάριο (sheet)").to_excel(writer, index=False, sheet_name="Σύνοψη")
+        bio.seek(0)
+        return bio
+
     st.download_button(
         "⬇️ Κατέβασε αναφορά (Πλήρες αντίγραφο + σπασμένες + σύνοψη)",
-        data=build_broken_report(xl, mode="full").getvalue(),
+        data=build_broken_report(xl).getvalue(),
         file_name=f"broken_friends_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
@@ -696,104 +619,83 @@ with tab_broken:
         for sheet in xl.sheet_names:
             df_raw = xl.parse(sheet_name=sheet)
             df_norm, _ = auto_rename_columns(df_raw)
-            broken_df, diag = friend_resolution_diagnostics(df_norm)
+            broken_df = list_broken_mutual_pairs(df_norm)
+            # Διάγνωση αντιστοίχισης ονομάτων
+            # (προαιρετικά μπορεί να προστεθεί λεπτομερής διάγνωση όπως στο app3)
             st.markdown(f"**{sheet}**")
             if broken_df.empty:
                 st.info("— Καμία σπασμένη πλήρως αμοιβαία δυάδα —")
             else:
                 st.dataframe(broken_df, use_container_width=True)
-            if diag["unmatched"] or diag["ambiguous"]:
-                with st.expander("🛠️ Διάγνωση αντιστοίχισης ονομάτων"):
-                    if diag["unmatched"]:
-                        st.warning("Μη αντιστοιχισμένα ονόματα φίλων: " + ", ".join(diag["unmatched"]))
-                    if diag["ambiguous"]:
-                        st.error("Αμφίβολα ονόματα (ίδιο μικρό/επώνυμο σε πολλούς):")
-                        for tok, cand in diag["ambiguous"].items():
-                            st.write(f"- **{tok}** → πιθανοί: {', '.join(cand)}")
 
 # ===========================
 # 📦 Mass report (all sheets): broken friendships + conflicts (per-student only)
 # ===========================
 
-
-def build_mass_broken_and_conflicts_report(xl: pd.ExcelFile) -> BytesIO:
-    """Create one Excel containing, for ALL sheets:
-    - Summary with counts (NO conflict pairs)
-    - For each sheet: BROKEN_PAIRS, BROKEN_PER_STUDENT, CONFLICTS_PER_STUDENT
-    """
-    bio = BytesIO()
-    summary_rows = []
-    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
-        for sheet in xl.sheet_names:
-            df_raw = xl.parse(sheet_name=sheet)
-            df_norm, _ = auto_rename_columns(df_raw)
-
-            # Broken pairs (mutual friendships placed in different classes)
-            broken_pairs = list_broken_mutual_pairs(df_norm)
-
-            # Conflicts per student (no pairs)
-            conf_counts, conf_names = compute_conflict_counts_and_names(df_norm)
-            df_ps_conf = pd.DataFrame({
-                "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
-                "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
-                "ΣΥΓΚΡΟΥΣΗ": conf_counts.astype(int),
-                "ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ": conf_names,
-            })
-
-            # Broken per student (names)
-            broken_counts_ps, broken_names_ps = compute_broken_friend_names_per_student(df_norm)
-            df_ps_broken = pd.DataFrame({
-                "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
-                "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
-                "ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ": broken_counts_ps.astype(int),
-                "ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ": broken_names_ps,
-            })
-
-            # Write three sheets per scenario (NO conflict pairs)
-            bp_name = sanitize_sheet_name(f"{sheet}_BROKEN_PAIRS")
-            bps_name = sanitize_sheet_name(f"{sheet}_BROKEN_PER_STUDENT")
-            cps_name = sanitize_sheet_name(f"{sheet}_CONFLICTS_PER_STUDENT")
-
-            (broken_pairs if not broken_pairs.empty else pd.DataFrame({"info":["— καμία —"]})).to_excel(writer, index=False, sheet_name=bp_name)
-            df_ps_broken.to_excel(writer, index=False, sheet_name=bps_name)
-            df_ps_conf.to_excel(writer, index=False, sheet_name=cps_name)
-
-            # Add to summary (NO conflict pairs column)
-            summary_rows.append({
-                "Σενάριο (sheet)": sheet,
-                "Σπασμένες Δυάδες (pairs)": int(len(broken_pairs)),
-                "Μαθητές με Σπασμένη Φιλία (>=1)": int((broken_counts_ps.fillna(0) > 0).sum()),
-                "Μαθητές με Σύγκρουση στην ίδια τάξη (>=1)": int((conf_counts.fillna(0) > 0).sum()),
-            })
-
-        summary_df = pd.DataFrame(summary_rows).sort_values("Σενάριο (sheet)")
-        summary_df.to_excel(writer, index=False, sheet_name="Σύνοψη")
-
-    bio.seek(0)
-    return bio
-
-
 with tab_mass:
     st.subheader("📦 Μαζικές αναφορές — Σπασμένες φιλίες & Συγκρούσεις (χωρίς ζεύγη σύγκρουσης)")
 
+    def build_mass_broken_and_conflicts_report(xl_file: pd.ExcelFile) -> BytesIO:
+        bio = BytesIO()
+        summary_rows = []
+        with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+            for idx, sheet in enumerate(xl_file.sheet_names, start=1):
+                df_raw = xl_file.parse(sheet_name=sheet)
+                df_norm, _ = auto_rename_columns(df_raw)
+
+                broken_pairs = list_broken_mutual_pairs(df_norm)
+                conf_counts, conf_names = compute_conflict_counts_and_names(df_norm)
+
+                broken_counts_ps, broken_names_ps = compute_broken_friend_names_per_student(df_norm)
+                df_ps_broken = pd.DataFrame({
+                    "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
+                    "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
+                    "ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ": broken_counts_ps.astype(int),
+                    "ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ": broken_names_ps,
+                })
+                df_ps_conf = pd.DataFrame({
+                    "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
+                    "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
+                    "ΣΥΓΚΡΟΥΣΗ": conf_counts.astype(int),
+                    "ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ": conf_names,
+                })
+
+                bp_name  = f"S{idx}_BP"   # broken pairs
+                bps_name = f"S{idx}_BPS"  # broken per student
+                cps_name = f"S{idx}_CPS"  # conflicts per student
+
+                (broken_pairs if not broken_pairs.empty else pd.DataFrame({"info":["— καμία —"]})).to_excel(writer, index=False, sheet_name=bp_name)
+                df_ps_broken.to_excel(writer, index=False, sheet_name=bps_name)
+                df_ps_conf.to_excel(writer, index=False, sheet_name=cps_name)
+
+                summary_rows.append({
+                    "Index": idx,
+                    "Original sheet name": sheet,
+                    "S-code": f"S{idx}",
+                    "Broken Pairs (rows)": int(len(broken_pairs)),
+                    "Students with ≥1 Broken Friendship": int((broken_counts_ps.fillna(0) > 0).sum()),
+                    "Students with ≥1 Conflict in Same Class": int((conf_counts.fillna(0) > 0).sum()),
+                })
+
+            pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name="SUMMARY")
+        bio.seek(0)
+        return bio
+
+    # Ζωντανή σύνοψη
     summary_rows = []
-    broken_pairs_by_sheet = {}
     for sheet in xl.sheet_names:
         df_raw = xl.parse(sheet_name=sheet)
         df_norm, _ = auto_rename_columns(df_raw)
-        # Broken
         bp = list_broken_mutual_pairs(df_norm)
-        broken_pairs_by_sheet[sheet] = bp
-        # Conflicts per student
-        conf_counts, conf_names = compute_conflict_counts_and_names(df_norm)
+        bc_ps, _ = compute_broken_friend_names_per_student(df_norm)
+        conf_counts, _ = compute_conflict_counts_and_names(df_norm)
         summary_rows.append({
             "Σενάριο (sheet)": sheet,
             "Σπασμένες Δυάδες (pairs)": int(len(bp)),
-            "Μαθητές με Σπασμένη Φιλία (>=1)": int((compute_broken_friend_names_per_student(df_norm)[0].fillna(0) > 0).sum()),
+            "Μαθητές με Σπασμένη Φιλία (>=1)": int((bc_ps.fillna(0) > 0).sum()),
             "Μαθητές με Σύγκρουση στην ίδια τάξη (>=1)": int((conf_counts.fillna(0) > 0).sum()),
         })
-    summary_df = pd.DataFrame(summary_rows).sort_values("Σενάριο (sheet)")
-    st.dataframe(summary_df, use_container_width=True)
+    st.dataframe(pd.DataFrame(summary_rows).sort_values("Σενάριο (sheet)"), use_container_width=True)
 
     st.download_button(
         "⬇️ Κατέβασε ΜΑΖΙΚΗ αναφορά (όλα τα sheets)",
@@ -802,27 +704,3 @@ with tab_mass:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
-
-    with st.expander("🔍 Αναλυτικά ανά sheet"):
-        for sheet in xl.sheet_names:
-            st.markdown(f"**{sheet}**")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown("**Σπασμένες αμοιβαίες**")
-                bp = broken_pairs_by_sheet[sheet]
-                if bp.empty:
-                    st.info("— Καμία —")
-                else:
-                    st.dataframe(bp, use_container_width=True)
-            with col2:
-                st.markdown("**Συγκρούσεις ανά μαθητή (με ονόματα)**")
-                df_raw = xl.parse(sheet_name=sheet)
-                df_norm, _ = auto_rename_columns(df_raw)
-                conf_counts, conf_names = compute_conflict_counts_and_names(df_norm)
-                df_ps_conf = pd.DataFrame({
-                    "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
-                    "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
-                    "ΣΥΓΚΡΟΥΣΗ": conf_counts.astype(int),
-                    "ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ": conf_names,
-                })
-                st.dataframe(df_ps_conf, use_container_width=True)
