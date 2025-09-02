@@ -518,8 +518,10 @@ def compute_conflict_counts_and_pairs(df: pd.DataFrame):
     return pd.Series(counts, index=df.index), pairs_df, pd.Series(names, index=df.index)
 
 
+
 def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # Normalize
     if "ΤΜΗΜΑ" in df:
         df["ΤΜΗΜΑ"] = df["ΤΜΗΜΑ"].apply(lambda v: v.strip() if isinstance(v, str) else v)
     if "ΦΥΛΟ" in df:
@@ -528,29 +530,31 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         if col in df:
             df[col] = _normalize_yes_no(df[col])
 
-    boys = df[df["ΦΥΛΟ"] == "Α"].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
-    girls = df[df["ΦΥΛΟ"] == "Κ"].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
-    educators = df[df["ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ"] == "Ν"].groupby("ΤΜΗΜΑ").size() if "ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ" in df else pd.Series(dtype=int)
-    energetic = df[df["ΖΩΗΡΟΣ"] == "Ν"].groupby("ΤΜΗΜΑ").size() if "ΖΩΗΡΟΣ" in df else pd.Series(dtype=int)
-    special = df[df["ΙΔΙΑΙΤΕΡΟΤΗΤΑ"] == "Ν"].groupby("ΤΜΗΜΑ").size() if "ΙΔΙΑΙΤΕΡΟΤΗΤΑ" in df else pd.Series(dtype=int)
-    greek = df[df["ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ"] == "Ν"].groupby("ΤΜΗΜΑ").size() if "ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ" in df else pd.Series(dtype=int)
+    # Base aggregates
+    boys = df[df.get("ΦΥΛΟ", "").eq("Α")].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
+    girls = df[df.get("ΦΥΛΟ", "").eq("Κ")].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
+    educators = df[df.get("ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ", "").eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ" in df else pd.Series(dtype=int)
+    energetic = df[df.get("ΖΩΗΡΟΣ", "").eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΖΩΗΡΟΣ" in df else pd.Series(dtype=int)
+    special = df[df.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "").eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΙΔΙΑΙΤΕΡΟΤΗΤΑ" in df else pd.Series(dtype=int)
+    greek = df[df.get("ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ", "").eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ" in df else pd.Series(dtype=int)
     total = df.groupby("ΤΜΗΜΑ").size() if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
-    broken = broken_count_by_class(df) if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
 
-    # ✅ Conflicts per class (count of conflict pairs seated in the same class)
+    # Broken friendships per class (existing helper)
     try:
-        counts_series, pairs_df, _names_series = compute_conflict_counts_and_pairs(df)
-        if pairs_df.empty:
-            conflict_by_class = pd.Series({tmima: 0 for tmima in df["ΤΜΗΜΑ"].dropna().astype(str).str.strip().unique()})
-        else:
-            conflict_counts = {}
-            for _, row in pairs_df.iterrows():
-                c = str(row["A_ΤΜΗΜΑ"]).strip()
-                conflict_counts[c] = conflict_counts.setdefault(c, 0) + 1
-            conflict_by_class = pd.Series(conflict_counts).astype(int)
+        broken = broken_count_by_class(df) if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
     except Exception:
-        # Fallback safe default
-        conflict_by_class = pd.Series({tmima: 0 for tmima in df.get("ΤΜΗΜΑ", pd.Series(dtype=str)).dropna().astype(str).str.strip().unique()})
+        broken = pd.Series(dtype=int)
+
+    # Conflicts per class = SUM of per-student conflict counts (unilateral=1, mutual=2)
+    try:
+        conf_counts, _conf_pairs, _conf_names = compute_conflict_counts_and_pairs(df)
+        if "ΤΜΗΜΑ" in df:
+            cls = df["ΤΜΗΜΑ"].astype(str).str.strip()
+            conflict_by_class = conf_counts.groupby(cls).sum().astype(int)
+        else:
+            conflict_by_class = pd.Series(dtype=int)
+    except Exception:
+        conflict_by_class = pd.Series(dtype=int)
 
     stats = pd.DataFrame({
         "ΑΓΟΡΙΑ": boys,
@@ -571,6 +575,7 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         stats = stats.sort_index()
     return stats
+
 
 def export_stats_to_excel(stats_df: pd.DataFrame) -> BytesIO:
     output = BytesIO()
@@ -736,21 +741,16 @@ with tab_stats:
     if not missing:
         
         stats_df = generate_stats(df_norm)
-        # 🔧 Safety: ensure column "ΣΥΓΚΡΟΥΣΗ" exists in stats_df (per-class conflict pairs)
+        # 🔧 Safety: ensure column "ΣΥΓΚΡΟΥΣΗ" exists in stats_df using per-student sum
         if "ΣΥΓΚΡΟΥΣΗ" not in stats_df.columns:
             try:
-                conf_counts, conf_pairs, _conf_names = compute_conflict_counts_and_pairs(df_norm)
-                if conf_pairs.empty:
-                    conflict_by_class = {str(t).strip(): 0 for t in df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)).dropna().astype(str).str.strip().unique()}
+                conf_counts, _conf_pairs, _conf_names = compute_conflict_counts_and_pairs(df_norm)
+                if "ΤΜΗΜΑ" in df_norm:
+                    cls = df_norm["ΤΜΗΜΑ"].astype(str).str.strip()
+                    conflict_by_class = conf_counts.groupby(cls).sum().astype(int)
                 else:
-                    conflict_counts = {}
-                    for _, row in conf_pairs.iterrows():
-                        c = str(row["A_ΤΜΗΜΑ"]).strip()
-                        conflict_counts[c] = conflict_counts.get(c, 0) + 1
-                    conflict_by_class = conflict_counts
-                # set column aligned by index
-                stats_df["ΣΥΓΚΡΟΥΣΗ"] = [conflict_by_class.get(str(idx).strip(), 0) for idx in stats_df.index]
-                # place it before "ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ" if exists
+                    conflict_by_class = pd.Series(dtype=int)
+                stats_df["ΣΥΓΚΡΟΥΣΗ"] = [int(conflict_by_class.get(str(idx).strip(), 0)) for idx in stats_df.index]
                 cols = list(stats_df.columns)
                 if "ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ" in cols:
                     cols.insert(cols.index("ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ"), cols.pop(cols.index("ΣΥΓΚΡΟΥΣΗ")))
