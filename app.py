@@ -480,6 +480,7 @@ def compute_conflict_counts_and_pairs(df: pd.DataFrame):
     pairs_df = pd.DataFrame(rows)
     return pd.Series(counts, index=df.index), pairs_df, pd.Series(names, index=df.index)
 
+
 def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "ΤΜΗΜΑ" in df:
@@ -499,6 +500,21 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     total = df.groupby("ΤΜΗΜΑ").size() if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
     broken = broken_count_by_class(df) if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
 
+    # ✅ Conflicts per class (count of conflict pairs seated in the same class)
+    try:
+        counts_series, pairs_df, _names_series = compute_conflict_counts_and_pairs(df)
+        if pairs_df.empty:
+            conflict_by_class = pd.Series({tmima: 0 for tmima in df["ΤΜΗΜΑ"].dropna().astype(str).str.strip().unique()})
+        else:
+            conflict_counts = {}
+            for _, row in pairs_df.iterrows():
+                c = str(row["A_ΤΜΗΜΑ"]).strip()
+                conflict_counts[c] = conflict_counts.setdefault(c, 0) + 1
+            conflict_by_class = pd.Series(conflict_counts).astype(int)
+    except Exception:
+        # Fallback safe default
+        conflict_by_class = pd.Series({tmima: 0 for tmima in df.get("ΤΜΗΜΑ", pd.Series(dtype=str)).dropna().astype(str).str.strip().unique()})
+
     stats = pd.DataFrame({
         "ΑΓΟΡΙΑ": boys,
         "ΚΟΡΙΤΣΙΑ": girls,
@@ -506,6 +522,7 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         "ΖΩΗΡΟΙ": energetic,
         "ΙΔΙΑΙΤΕΡΟΤΗΤΑ": special,
         "ΓΝΩΣΗ ΕΛΛΗΝΙΚΩΝ": greek,
+        "ΣΥΓΚΡΟΥΣΗ": conflict_by_class,
         "ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ": broken,
         "ΣΥΝΟΛΟ ΜΑΘΗΤΩΝ": total,
     }).fillna(0).astype(int)
@@ -518,9 +535,6 @@ def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
         stats = stats.sort_index()
     return stats
 
-# ---------------------------
-# Export helpers
-# ---------------------------
 def export_stats_to_excel(stats_df: pd.DataFrame) -> BytesIO:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
