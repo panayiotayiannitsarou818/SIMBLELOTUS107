@@ -637,6 +637,38 @@ with tab_stats:
             else:
                 st.dataframe(conflict_pairs, use_container_width=True)
 
+
+        # 🧩 Σπασμένες αμοιβαίες για το επιλεγμένο sheet — εμφάνιση ονομάτων (+ φίλτρο ανά τμήμα)
+        with st.expander("🧩 Σπασμένες αμοιβαίες (ονόματα) για το επιλεγμένο sheet", expanded=False):
+            try:
+                broken_df_for_sheet = list_broken_mutual_pairs(df_norm)
+                if broken_df_for_sheet.empty:
+                    st.info("— Δεν βρέθηκαν σπασμένες πλήρως αμοιβαίες δυάδες στο επιλεγμένο sheet —")
+                else:
+                    classes = sorted(set(broken_df_for_sheet["A_ΤΜΗΜΑ"].astype(str)) | set(broken_df_for_sheet["B_ΤΜΗΜΑ"].astype(str)))
+                    sel = st.selectbox("Φίλτρο ανά τμήμα", options=["Όλα"] + classes, index=0)
+                    if sel != "Όλα":
+                        mask = (broken_df_for_sheet["A_ΤΜΗΜΑ"].astype(str) == sel) | (broken_df_for_sheet["B_ΤΜΗΜΑ"].astype(str) == sel)
+                        view_df = broken_df_for_sheet[mask].reset_index(drop=True)
+                    else:
+                        view_df = broken_df_for_sheet.reset_index(drop=True)
+                    st.dataframe(view_df, use_container_width=True)
+                    # Download as Excel
+                    from io import BytesIO
+                    bio = BytesIO()
+                    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+                        view_df.to_excel(writer, index=False, sheet_name="Σπασμένες_Δυάδες")
+                    bio.seek(0)
+                    st.download_button(
+                        "⬇️ Κατέβασε ονόματα σπασμένων δυάδων (Excel)",
+                        data=bio.getvalue(),
+                        file_name=f"broken_pairs_{sanitize_sheet_name(sheet)}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+            except Exception as e:
+                st.warning(f"Δεν ήταν δυνατή η εμφάνιση ονομάτων σπασμένων δυάδων: {e}")
+
+
     if not missing:
         stats_df = generate_stats(df_norm)
         st.dataframe(stats_df, use_container_width=True)
