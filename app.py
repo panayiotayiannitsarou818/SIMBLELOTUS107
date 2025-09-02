@@ -830,6 +830,16 @@ with st.tabs(["📊 Στατιστικά (1 sheet)", "🧩 Σπασμένες α
         pairs_by_sheet[sheet] = pairs
     summ_conf = pd.DataFrame(sum_rows).sort_values("Σενάριο (sheet)")
     st.dataframe(summ_conf, use_container_width=True)
+
+    # 📦 Μαζική αναφορά για όλα τα sheets (σπασμένες φίλιες + συγκρούσεις)
+    st.download_button(
+        "⬇️ Κατέβασε ΜΑΖΙΚΗ αναφορά (όλα τα sheets) — *_BROKEN_NAMES.xlsx",
+        data=build_mass_broken_and_conflicts_report(xl).getvalue(),
+        file_name=f"mass_broken_conflicts_names_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
+
     # Detailed per sheet
     with st.expander("🔍 Αναλυτικά ζεύγη ανά sheet"):
         for sheet in xl.sheet_names:
@@ -839,4 +849,69 @@ with st.tabs(["📊 Στατιστικά (1 sheet)", "🧩 Σπασμένες α
                 st.info("— Δεν βρέθηκαν ζεύγη σύγκρουσης στην ίδια τάξη —")
             else:
                 st.dataframe(pairs, use_container_width=True)
+
+
+
+# ===========================
+# 📦 Mass report (all sheets): broken friendships + conflicts
+# ===========================
+def build_mass_broken_and_conflicts_report(xl: pd.ExcelFile) -> BytesIO:
+    \"\\"Create one Excel containing, for ALL sheets:
+    - Summary with counts
+    - For each sheet: BROKEN_PAIRS, CONFLICT_PAIRS, BROKEN_PER_STUDENT, CONFLICTS_PER_STUDENT
+    \"\\"
+    bio = BytesIO()
+    summary_rows = []
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        for sheet in xl.sheet_names:
+            df_raw = xl.parse(sheet_name=sheet)
+            df_norm, _ = auto_rename_columns(df_raw)
+
+            # Broken pairs
+            broken_pairs = list_broken_mutual_pairs(df_norm)
+
+            # Conflicts
+            conf_counts, conf_pairs, conf_names = compute_conflict_counts_and_pairs(df_norm)
+
+            # Per-student broken & conflict names
+            broken_counts_ps, broken_names_ps = compute_broken_friend_names_per_student(df_norm)
+            df_ps_broken = pd.DataFrame({
+                "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
+                "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
+                "ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ": broken_counts_ps.astype(int),
+                "ΣΠΑΣΜΕΝΗ_ΦΙΛΙΑ_ΟΝΟΜΑ": broken_names_ps,
+            })
+            df_ps_conf = pd.DataFrame({
+                "ΟΝΟΜΑ": df_norm.get("ΟΝΟΜΑ", pd.Series(dtype=str)),
+                "ΤΜΗΜΑ": df_norm.get("ΤΜΗΜΑ", pd.Series(dtype=str)),
+                "ΣΥΓΚΡΟΥΣΗ": conf_counts.astype(int),
+                "ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ": conf_names,
+            })
+
+            # Write four sheets per scenario
+            bp_name = sanitize_sheet_name(f"{sheet}_BROKEN_PAIRS")
+            cp_name = sanitize_sheet_name(f"{sheet}_CONFLICT_PAIRS")
+            bps_name = sanitize_sheet_name(f"{sheet}_BROKEN_PER_STUDENT")
+            cps_name = sanitize_sheet_name(f"{sheet}_CONFLICTS_PER_STUDENT")
+
+            (broken_pairs if not broken_pairs.empty else pd.DataFrame({"info":["— καμία —"]})).to_excel(writer, index=False, sheet_name=bp_name)
+            (conf_pairs if not conf_pairs.empty else pd.DataFrame({"info":["— καμία —"]})).to_excel(writer, index=False, sheet_name=cp_name)
+            df_ps_broken.to_excel(writer, index=False, sheet_name=bps_name)
+            df_ps_conf.to_excel(writer, index=False, sheet_name=cps_name)
+
+            # Add to summary
+            summary_rows.append({
+                "Σενάριο (sheet)": sheet,
+                "Σπασμένες Δυάδες (pairs)": int(len(broken_pairs)),
+                "Ζεύγη Σύγκρουσης στην ίδια τάξη": int(len(conf_pairs)),
+                "Μαθητές με Σπασμένη Φιλία (>=1)": int((broken_counts_ps.fillna(0) > 0).sum()),
+                "Μαθητές με Σύγκρουση στην ίδια τάξη (>=1)": int((conf_counts.fillna(0) > 0).sum()),
+            })
+
+        # Write summary
+        summary_df = pd.DataFrame(summary_rows).sort_values("Σενάριο (sheet)")
+        summary_df.to_excel(writer, index=False, sheet_name="Σύνοψη")
+
+    bio.seek(0)
+    return bio
 
