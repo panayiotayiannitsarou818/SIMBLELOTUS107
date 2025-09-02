@@ -426,21 +426,28 @@ def _build_name_resolution(df: pd.DataFrame):
             return next(iter(group)) if len(group) == 1 else None
     return name_to_original, class_by_name, resolve_name
 
+
 def compute_conflict_counts_and_pairs(df: pd.DataFrame):
     """
-    Return (counts_series, pairs_df).
-    counts_series: per-student integer count of conflicts seated in the SAME class as the student (unilateral list-based).
-    pairs_df: deduplicated pairs (A,B) where either A listed B (or B listed A) and both are in the same class.
+    Return (counts_series, pairs_df, names_series).
+    - counts_series: per-student integer count of conflicts seated in the SAME class.
+    - pairs_df: deduplicated pairs (A,B) where either A listed B (or B listed A) and both are in the same class.
+    - names_series: per-student comma-separated string of conflict names that are in the same class.
     """
     required = {"ΟΝΟΜΑ", "ΤΜΗΜΑ", "ΣΥΓΚΡΟΥΣΗ"}
     if not required.issubset(set(df.columns)):
-        return pd.Series([0]*len(df), index=df.index), pd.DataFrame(columns=["A","A_ΤΜΗΜΑ","B","B_ΤΜΗΜΑ"])
+        return (
+            pd.Series([0]*len(df), index=df.index),
+            pd.DataFrame(columns=["A","A_ΤΜΗΜΑ","B","B_ΤΜΗΜΑ"]),
+            pd.Series([""]*len(df), index=df.index),
+        )
 
     name_to_original, class_by_name, resolve_name = _build_name_resolution(df)
 
     # Build canonical name per row for alignment
     canon_names = df["ΟΝΟΜΑ"].map(_canon_name)
     counts = [0]*len(df)
+    names = [""]*len(df)
     pairs = set()
 
     # map index by canonical name for alignment
@@ -450,15 +457,16 @@ def compute_conflict_counts_and_pairs(df: pd.DataFrame):
         me = _canon_name(row["ΟΝΟΜΑ"])
         my_class = class_by_name.get(me, "")
         targets = _parse_conflict_targets(row["ΣΥΓΚΡΟΥΣΗ"])
-        my_count = 0
+        same_class_names = []
         for t in targets:
             r = resolve_name(t)
             if r and r != me:
                 if class_by_name.get(r, None) == my_class and my_class:
-                    my_count += 1
+                    same_class_names.append(name_to_original.get(r, r))
                     pair = tuple(sorted([me, r]))
                     pairs.add(pair)
-        counts[index_by_canon.get(me, i)] = my_count
+        counts[index_by_canon.get(me, i)] = len(same_class_names)
+        names[index_by_canon.get(me, i)] = ", ".join(same_class_names)
 
     rows = []
     for a, b in sorted(pairs):
@@ -470,10 +478,8 @@ def compute_conflict_counts_and_pairs(df: pd.DataFrame):
                 "B": name_to_original.get(b, b), "B_ΤΜΗΜΑ": tb,
             })
     pairs_df = pd.DataFrame(rows)
-    return pd.Series(counts, index=df.index), pairs_df
-# ---------------------------
-# Stats generator
-# ---------------------------
+    return pd.Series(counts, index=df.index), pairs_df, pd.Series(names, index=df.index)
+
 def generate_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "ΤΜΗΜΑ" in df:
@@ -592,10 +598,11 @@ with tab_stats:
     df_norm, ren_map = auto_rename_columns(df_raw)
 
     # ✅ Υπολογισμός μετρητή ΣΥΓΚΡΟΥΣΗΣ και ζευγών στην ίδια τάξη
-    conflict_counts, conflict_pairs = compute_conflict_counts_and_pairs(df_norm)
+    conflict_counts, conflict_pairs, conflict_names = compute_conflict_counts_and_pairs(df_norm)
     try:
         df_with_conflicts = df_norm.copy()
         df_with_conflicts["ΣΥΓΚΡΟΥΣΗ"] = conflict_counts.astype(int)
+        df_with_conflicts["ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] = conflict_names
     except Exception:
         df_with_conflicts = df_norm
 
