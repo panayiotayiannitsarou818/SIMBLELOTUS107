@@ -178,7 +178,7 @@ def _strip_diacritics(s: str) -> str:
 
 def _canon_name(s: str) -> str:
     s = (str(s) if s is not None else "").strip()
-    s = s.strip("[]'\" ")
+    s = s.strip("[]'" ")
     s = re.sub(r"\s+", " ", s)
     s = _strip_diacritics(s).upper()
     return s
@@ -855,11 +855,12 @@ with st.tabs(["📊 Στατιστικά (1 sheet)", "🧩 Σπασμένες α
 # ===========================
 # 📦 Mass report (all sheets): broken friendships + conflicts
 # ===========================
+
 def build_mass_broken_and_conflicts_report(xl: pd.ExcelFile) -> BytesIO:
-    \"\\"Create one Excel containing, for ALL sheets:
+    """Create one Excel containing, for ALL sheets:
     - Summary with counts
     - For each sheet: BROKEN_PAIRS, CONFLICT_PAIRS, BROKEN_PER_STUDENT, CONFLICTS_PER_STUDENT
-    \"\\"
+    """
     bio = BytesIO()
     summary_rows = []
     with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
@@ -867,10 +868,10 @@ def build_mass_broken_and_conflicts_report(xl: pd.ExcelFile) -> BytesIO:
             df_raw = xl.parse(sheet_name=sheet)
             df_norm, _ = auto_rename_columns(df_raw)
 
-            # Broken pairs
+            # Broken pairs (mutual friendships placed in different classes)
             broken_pairs = list_broken_mutual_pairs(df_norm)
 
-            # Conflicts
+            # Conflicts (students who listed conflicts and ended up in the same class)
             conf_counts, conf_pairs, conf_names = compute_conflict_counts_and_pairs(df_norm)
 
             # Per-student broken & conflict names
@@ -914,4 +915,5 @@ def build_mass_broken_and_conflicts_report(xl: pd.ExcelFile) -> BytesIO:
 
     bio.seek(0)
     return bio
+
 
